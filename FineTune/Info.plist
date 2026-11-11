@@ -12,8 +12,12 @@
 	<string>FineTune uses Bluetooth to connect paired audio devices from the menu bar.</string>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/ronitsingh10/FineTune/main/appcast.xml</string>
+	<!-- Fork: auto-update disabled. Upstream Sparkle feed would silently replace
+	     this fork build (with the volume fixes) by the official signed release. -->
 	<key>SUPublicEDKey</key>
 	<string>xExSoQmCLDCez0KyhZ9EM9PdOZFZgyX/+VF+OVrpIlo=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>CFBundleURLTypes</key>

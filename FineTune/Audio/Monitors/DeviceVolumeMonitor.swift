@@ -65,7 +65,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Called when the default input device changes (newDeviceUID)
     var onDefaultInputDeviceChanged: ((String) -> Void)?
 
-    private let deviceMonitor: AudioDeviceMonitor
+    private let deviceMonitor: any AudioDeviceProviding
     private let settingsManager: SettingsManager
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "DeviceVolumeMonitor")
 
@@ -144,13 +144,13 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     )
 
     #if !APP_STORE
-    init(deviceMonitor: AudioDeviceMonitor, settingsManager: SettingsManager, ddcController: DDCController? = nil) {
+    init(deviceMonitor: any AudioDeviceProviding, settingsManager: SettingsManager, ddcController: DDCController? = nil) {
         self.deviceMonitor = deviceMonitor
         self.settingsManager = settingsManager
         self.ddcController = ddcController
     }
     #else
-    init(deviceMonitor: AudioDeviceMonitor, settingsManager: SettingsManager) {
+    init(deviceMonitor: any AudioDeviceProviding, settingsManager: SettingsManager) {
         self.deviceMonitor = deviceMonitor
         self.settingsManager = settingsManager
     }
@@ -956,11 +956,13 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Extracted from `readAllStates()` so a tier override change can refresh
     /// one device without enumerating the whole device list.
     private func readOneState(for deviceID: AudioDeviceID, device: AudioDevice) {
-        // Skip devices that HAL reports as dead (mid-disconnect)
-        guard deviceID.isDeviceAlive() else { return }
-
         let backend = outputVolumeBackend(for: deviceID)
 
+        // Software tier reads only persisted UID-keyed settings — no HAL access —
+        // so seed it even while HAL still reports the device as not-alive. DP/USB-C
+        // displays routinely enumerate present-but-not-alive during reconnect; if
+        // we skipped them here, the new AudioDeviceID would never get a volumes[]
+        // entry and consumers would default it to 1.0 (full volume).
         if backend == .software {
             let muted = settingsManager.getSoftwareDeviceMuteState(for: device.uid)
             let defaultVolume: Float = muted ? 0 : 1.0
@@ -969,6 +971,9 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
             muteStates[deviceID] = muted
             return
         }
+
+        // Skip devices that HAL reports as dead (mid-disconnect)
+        guard deviceID.isDeviceAlive() else { return }
 
         #if !APP_STORE
         // For DDC-backed devices, use cached DDC volume instead of CoreAudio

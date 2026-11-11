@@ -1442,6 +1442,16 @@ final class AudioEngine {
 
     /// Called when a device appears - switches pinned apps back to their preferred device
     private func handleDeviceConnected(_ deviceUID: String, name deviceName: String) {
+        // Re-seed device volume/mute state and re-push it into all taps. A
+        // power-cycled display mints a NEW AudioDeviceID for the same UID; the
+        // route-back below is optimistic and non-retrying, so without this heal a
+        // software-volume device could end up with taps rendering at full volume
+        // (missing volumes[] entry defaults to 1.0) until app restart. This
+        // function is re-entered by the alive-watcher, which also closes the
+        // seeded-while-not-alive race; idempotent re-reads of persisted state.
+        deviceVolumeMonitor.refreshOutputDeviceStates()
+        refreshAllTapOutputStates()
+
         // Register newly connected device in priority list
         settingsManager.ensureDeviceInPriority(deviceUID)
 
@@ -1539,6 +1549,19 @@ final class AudioEngine {
         if isNewDeviceHigherPriority, deviceUID != currentDefault {
             // A higher-priority device reconnected — switch to it
             reEvaluateOutputDefault()
+        } else if isNewDeviceHigherPriority, currentDefault == deviceUID {
+            // macOS made the reconnected device default BEFORE our device list knew
+            // it existed, so handleDefaultDeviceChanged deferred to "the upcoming
+            // device list refresh" — which is here. Complete that deferred work, or
+            // followsDefault apps stay stranded on the failover device while their
+            // raw audio (which follows the macOS default) plays untapped at full
+            // volume on the reconnected device. Route only once the device is alive;
+            // otherwise the alive-watcher installed above re-runs this handler.
+            if let device = deviceMonitor.device(for: deviceUID), isAliveCheck(device.id) {
+                logger.info("Reconnected \(deviceName) is already the macOS default — completing deferred followsDefault routing")
+                lastConfirmedDefaultUID = deviceUID
+                routeFollowsDefaultApps(to: deviceUID)
+            }
         } else if !isNewDeviceHigherPriority, currentDefault == deviceUID {
             // macOS already auto-switched to the lower-priority device — restore
             // what the user was on (not highest priority — they may have chosen a mid-priority device)

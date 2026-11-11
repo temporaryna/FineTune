@@ -1113,8 +1113,18 @@ final class AudioEngine {
             // across pauses (the monitor keeps paused processes in the list), so
             // every app that has played at least once keeps its tap. Pre-tapping
             // all audio-capable processes would burn CPU rendering silence.
+            //
+            // Exception: apps the user has configured (persisted volume, routing,
+            // or pinned). Their CoreAudio process objects already exist — they
+            // played before — so pre-tapping them costs almost nothing and covers
+            // the first sound after an engine restart, which would otherwise
+            // render raw at full device volume before a tap exists (a configured
+            // app's slider can be far below 100%, making the blast dramatic).
             let isStreaming = app.processObjectIDs.contains { $0.readProcessIsRunning() }
-            guard isStreaming || taps[app.id] != nil else { continue }
+            let isConfigured = settingsManager.getVolume(for: app.persistenceIdentifier) != nil
+                || settingsManager.getDeviceRouting(for: app.persistenceIdentifier) != nil
+                || appListCoordinator.isPinned(identifier: app.persistenceIdentifier)
+            guard isStreaming || isConfigured || taps[app.id] != nil else { continue }
 
             // Load saved device selection mode (single vs multi)
             let savedMode = volumeState.loadSavedDeviceSelectionMode(for: app.id, identifier: app.persistenceIdentifier)

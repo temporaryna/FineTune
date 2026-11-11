@@ -413,11 +413,12 @@ final class AudioEngine {
 
     /// Combined list of active apps and pinned inactive apps for UI display.
     /// Pinned apps appear first (sorted alphabetically), then unpinned active apps (sorted alphabetically).
-    /// UI shows only apps that are streaming right now (plus pinned) — the full
-    /// audio-capable list includes paused processes that must stay invisible.
+    /// An app appears once it has played any audio (a tap exists) and stays visible
+    /// while its process lives — including while paused. Processes that have never
+    /// made a sound (GPU services, daemons, helpers) stay hidden.
     var displayableApps: [DisplayableApp] {
         let activeApps = apps
-            .filter { $0.processObjectIDs.contains { $0.readProcessIsRunning() } }
+            .filter { $0.processObjectIDs.contains { $0.readProcessIsRunning() } || taps[$0.id] != nil }
             .filter { !appListCoordinator.isIgnored(identifier: $0.persistenceIdentifier) }
         let activeIdentifiers = Set(activeApps.map { $0.persistenceIdentifier })
 

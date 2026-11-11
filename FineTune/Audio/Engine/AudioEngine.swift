@@ -401,6 +401,10 @@ final class AudioEngine {
         }
     }
 
+    /// All audio-capable processes, including live ones that are paused (not
+    /// streaming). Taps are created when a process appears and persist while it
+    /// stays alive, so sporadic players (notifications, IM sounds) are tapped
+    /// from the first buffer instead of leaking raw audio before a tap exists.
     var apps: [AudioApp] {
         processMonitor.activeApps
     }
@@ -1928,8 +1932,13 @@ final class AudioEngine {
                     guard tap.isHealthCheckEligible(minActiveSeconds: 5.0) else { continue }
 
                     // Only health-check apps that are actively streaming (isRunning=true).
-                    // Paused apps have no callbacks, which is normal — not a health signal.
-                    let isActivelyStreaming = self.processMonitor.activeApps.contains { $0.id == pid }
+                    // Paused apps stay in the process list now (taps persist across
+                    // pauses), so streaming state must be read from the process object —
+                    // list membership alone is no longer a streaming signal. No callbacks
+                    // while paused is normal, not a health signal.
+                    let isActivelyStreaming = self.processMonitor.activeApps
+                        .first { $0.id == pid }?
+                        .processObjectIDs.contains { $0.readProcessIsRunning() } ?? false
                     guard isActivelyStreaming else {
                         consecutiveMisses[pid] = 0
                         continue

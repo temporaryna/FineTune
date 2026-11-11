@@ -215,7 +215,14 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
 
             for objectID in processIDs {
                 guard let pid = try? objectID.readProcessPID(), pid != myPID else { continue }
-                guard objectID.readProcessIsRunning() else { continue }
+
+                // Keep non-streaming process objects visible. AudioEngine keys tap
+                // lifetime off this list: if non-streaming processes were filtered out,
+                // cleanupStaleTaps would destroy a tap 30s after any playback pause, and
+                // the app's next short sound (notification, message chirp) would render
+                // raw — untapped, at full device volume — before a replacement tap
+                // exists. A live process keeps its tap; exit removes the process object
+                // from the list, which is what makes the tap stale.
 
                 // Try to find the parent app (for helper processes like Safari Graphics and Media)
                 let directApp = runningAppsByPID[pid]

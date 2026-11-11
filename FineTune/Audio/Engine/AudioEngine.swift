@@ -413,8 +413,11 @@ final class AudioEngine {
 
     /// Combined list of active apps and pinned inactive apps for UI display.
     /// Pinned apps appear first (sorted alphabetically), then unpinned active apps (sorted alphabetically).
+    /// UI shows only apps that are streaming right now (plus pinned) — the full
+    /// audio-capable list includes paused processes that must stay invisible.
     var displayableApps: [DisplayableApp] {
         let activeApps = apps
+            .filter { $0.processObjectIDs.contains { $0.readProcessIsRunning() } }
             .filter { !appListCoordinator.isIgnored(identifier: $0.persistenceIdentifier) }
         let activeIdentifiers = Set(activeApps.map { $0.persistenceIdentifier })
 
@@ -1104,6 +1107,13 @@ final class AudioEngine {
         for app in apps {
             guard !appliedPIDs.contains(app.id) else { continue }
             guard !settingsManager.isIgnored(app.persistenceIdentifier) else { continue }
+
+            // Create taps only for processes streaming right now; a tap persists
+            // across pauses (the monitor keeps paused processes in the list), so
+            // every app that has played at least once keeps its tap. Pre-tapping
+            // all audio-capable processes would burn CPU rendering silence.
+            let isStreaming = app.processObjectIDs.contains { $0.readProcessIsRunning() }
+            guard isStreaming || taps[app.id] != nil else { continue }
 
             // Load saved device selection mode (single vs multi)
             let savedMode = volumeState.loadSavedDeviceSelectionMode(for: app.id, identifier: app.persistenceIdentifier)

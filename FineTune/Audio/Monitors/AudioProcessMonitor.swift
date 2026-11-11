@@ -4,9 +4,12 @@ import AudioToolbox
 import os
 
 /// Lightweight value for detecting process list changes without comparing icons/names.
+/// Includes `hasRunningProcess` so streaming transitions (play/pause) trigger
+/// onAppsChanged — the engine creates a tap when a process starts streaming.
 private struct AppFingerprint: Hashable {
     let pid: pid_t
     let objectIDs: [AudioObjectID]
+    let hasRunningProcess: Bool
 }
 
 @Observable
@@ -14,6 +17,11 @@ private struct AppFingerprint: Hashable {
 final class AudioProcessMonitor: AudioProcessMonitoring {
     private(set) var activeApps: [AudioApp] = []
     var onAppsChanged: (([AudioApp]) -> Void)?
+
+    /// Snapshot of the last fingerprint set — compared against the fresh set to detect
+    /// changes. Stored separately because recomputing from activeApps would read the
+    /// current isRunning state, making old == new and defeating change detection.
+    private var previousFingerprints: Set<AppFingerprint> = []
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "AudioProcessMonitor")
 
@@ -215,6 +223,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
 
             for objectID in processIDs {
                 guard let pid = try? objectID.readProcessPID(), pid != myPID else { continue }
+                let isStreaming = objectID.readProcessIsRunning()
 
                 // Keep non-streaming process objects visible. AudioEngine keys tap
                 // lifetime off this list: if non-streaming processes were filtered out,
@@ -232,6 +241,14 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                 let resolvedApp = isRealApp ? directApp : findResponsibleApp(for: pid, in: runningAppsByPID)
                 let parentPID = resolvedApp?.processIdentifier ?? pid
                 let isHelper = parentPID != pid
+
+                // Skip orphaned non-streaming process objects — no resolvable owner
+                // app (helper of an exited app, zombie object). They would show up
+                // as empty entries in the UI; a streaming orphan (bare executable)
+                // is still kept and shown.
+                if !isStreaming, resolvedApp == nil, !isHelper {
+                    continue
+                }
 
                 // Use resolved app's info, fall back to Core Audio bundle ID
                 let name = resolvedApp?.localizedName
@@ -277,12 +294,23 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
 
             let sorted = appsByPID.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-            // Only fire callback if the app list actually changed (avoids churn from periodic refresh)
-            let oldSet = Set(activeApps.map { AppFingerprint(pid: $0.id, objectIDs: $0.processObjectIDs) })
-            let newSet = Set(sorted.map { AppFingerprint(pid: $0.id, objectIDs: $0.processObjectIDs) })
+            // Only fire callback if the app list actually changed (avoids churn from periodic refresh).
+            // Snapshot the previous fingerprint set instead of recomputing from activeApps —
+            // recomputing would read the CURRENT isRunning state, making old == new always.
+            // Including hasRunningProcess makes play/pause transitions fire onAppsChanged,
+            // which is when the engine creates a tap for a newly streaming process.
+            let oldSet = previousFingerprints
+            let newSet = Set(sorted.map {
+                AppFingerprint(
+                    pid: $0.id,
+                    objectIDs: $0.processObjectIDs,
+                    hasRunningProcess: $0.processObjectIDs.contains { $0.readProcessIsRunning() }
+                )
+            })
 
             activeApps = sorted
             if oldSet != newSet {
+                previousFingerprints = newSet
                 onAppsChanged?(activeApps)
             }
 

@@ -111,6 +111,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
 @MainActor
 final class StubProcessMonitor: AudioProcessMonitoring {
     var activeApps: [AudioApp] = []
+    var streamingPIDs: Set<pid_t> = []
     var onAppsChanged: (([AudioApp]) -> Void)?
     func start() {}
     func stop() {}

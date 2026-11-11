@@ -402,9 +402,10 @@ final class AudioEngine {
     }
 
     /// All audio-capable processes, including live ones that are paused (not
-    /// streaming). Taps are created when a process appears and persist while it
-    /// stays alive, so sporadic players (notifications, IM sounds) are tapped
-    /// from the first buffer instead of leaking raw audio before a tap exists.
+    /// streaming). Taps are created when a process starts streaming (or is
+    /// user-configured) and persist while it stays alive, so sporadic players
+    /// (notifications, IM sounds) are tapped from the first buffer instead of
+    /// leaking raw audio before a tap exists.
     var apps: [AudioApp] {
         processMonitor.activeApps
     }
@@ -418,7 +419,7 @@ final class AudioEngine {
     /// made a sound (GPU services, daemons, helpers) stay hidden.
     var displayableApps: [DisplayableApp] {
         let activeApps = apps
-            .filter { $0.processObjectIDs.contains { $0.readProcessIsRunning() } || taps[$0.id] != nil }
+            .filter { processMonitor.streamingPIDs.contains($0.id) || taps[$0.id] != nil }
             .filter { !appListCoordinator.isIgnored(identifier: $0.persistenceIdentifier) }
         let activeIdentifiers = Set(activeApps.map { $0.persistenceIdentifier })
 
@@ -1120,7 +1121,7 @@ final class AudioEngine {
             // the first sound after an engine restart, which would otherwise
             // render raw at full device volume before a tap exists (a configured
             // app's slider can be far below 100%, making the blast dramatic).
-            let isStreaming = app.processObjectIDs.contains { $0.readProcessIsRunning() }
+            let isStreaming = processMonitor.streamingPIDs.contains(app.id)
             let isConfigured = settingsManager.getVolume(for: app.persistenceIdentifier) != nil
                 || settingsManager.getDeviceRouting(for: app.persistenceIdentifier) != nil
                 || appListCoordinator.isPinned(identifier: app.persistenceIdentifier)
@@ -1954,12 +1955,10 @@ final class AudioEngine {
 
                     // Only health-check apps that are actively streaming (isRunning=true).
                     // Paused apps stay in the process list now (taps persist across
-                    // pauses), so streaming state must be read from the process object —
-                    // list membership alone is no longer a streaming signal. No callbacks
-                    // while paused is normal, not a health signal.
-                    let isActivelyStreaming = self.processMonitor.activeApps
-                        .first { $0.id == pid }?
-                        .processObjectIDs.contains { $0.readProcessIsRunning() } ?? false
+                    // pauses), so list membership alone is not a streaming signal —
+                    // read streaming state from the monitor's per-refresh sweep.
+                    // No callbacks while paused is normal, not a health signal.
+                    let isActivelyStreaming = self.processMonitor.streamingPIDs.contains(pid)
                     guard isActivelyStreaming else {
                         consecutiveMisses[pid] = 0
                         continue

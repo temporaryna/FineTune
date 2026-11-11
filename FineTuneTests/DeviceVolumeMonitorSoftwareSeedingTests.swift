@@ -21,7 +21,8 @@ struct DeviceVolumeMonitorSoftwareSeedingTests {
         let settings = SettingsManager(directory: tempDir)
 
         // The user had this display at 25% software volume before it dropped off.
-        settings.setDeviceVolumeTierOverride(for: "uid-hdmi", to: .software)
+        // No tier override is needed: AudioDeviceID(0) is invalid, so
+        // outputVolumeBackend resolves it to .software before any override lookup.
         settings.setSoftwareDeviceVolume(for: "uid-hdmi", to: 0.25)
 
         let monitor = MockAudioDeviceMonitor()

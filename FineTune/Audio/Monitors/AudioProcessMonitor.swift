@@ -16,6 +16,7 @@ private struct AppFingerprint: Hashable {
 @MainActor
 final class AudioProcessMonitor: AudioProcessMonitoring {
     private(set) var activeApps: [AudioApp] = []
+    private(set) var streamingPIDs: Set<pid_t> = []
     var onAppsChanged: (([AudioApp]) -> Void)?
 
     /// Snapshot of the last fingerprint set — compared against the fresh set to detect
@@ -246,7 +247,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                 // app (helper of an exited app, zombie object). They would show up
                 // as empty entries in the UI; a streaming orphan (bare executable)
                 // is still kept and shown.
-                if !isStreaming, resolvedApp == nil, !isHelper {
+                if !isStreaming, resolvedApp == nil {
                     continue
                 }
 
@@ -293,6 +294,12 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
             updateProcessListeners(for: processIDs)
 
             let sorted = appsByPID.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+            // Single isRunning sweep per refresh — consumers filter via streamingPIDs
+            // instead of reading the HAL property per object on every UI evaluation.
+            streamingPIDs = Set(sorted.filter {
+                $0.processObjectIDs.contains { $0.readProcessIsRunning() }
+            }.map(\.id))
 
             // Only fire callback if the app list actually changed (avoids churn from periodic refresh).
             // Snapshot the previous fingerprint set instead of recomputing from activeApps —

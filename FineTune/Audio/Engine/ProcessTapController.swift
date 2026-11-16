@@ -155,6 +155,8 @@ final class ProcessTapController: ProcessTapControlling {
     private var isSwitching = false
     /// Cancellable crossfade task — cancelled when a new switch starts
     private var crossfadeTask: Task<Void, Error>?
+    /// Serialization chain for device switches (see updateDevices doc comment).
+    private var switchChainTask: Task<Void, Error> = Task { @MainActor in }
     private var didLogEQBypassForMultichannel = false
 
     // MARK: - Public Properties
@@ -712,7 +714,37 @@ final class ProcessTapController: ProcessTapControlling {
     /// Creates a second tap+aggregate for the new device set, crossfades, then destroys the old one.
     /// - Parameter sourceDeviceDead: If true, skips crossfade and uses destructive switch
     ///   (the source device is disconnected, so there's no audio to blend from).
+    ///
+    /// All switches run through a serialization chain. Default-change routing and
+    /// device-disconnect fallback can fire concurrently for the same tap; switch
+    /// bodies interleave on await points — the destructive switch zeroes `_volume`
+    /// and ramps it back from a snapshot while a concurrent crossfade promotes the
+    /// secondary, aggregates get destroyed mid-promotion — any of which leaves the
+    /// tap capturing silently (meter/EQ alive, no output). Switches are sub-second,
+    /// so queueing is safe and the last requested target always wins.
     func updateDevices(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String? = nil, sourceDeviceDead: Bool = false) async throws {
+        try await enqueueSwitch {
+            try await self.performSwitchUpdate(
+                to: newDeviceUIDs,
+                preferredTapSourceDeviceUID: preferredTapSourceDeviceUID,
+                sourceDeviceDead: sourceDeviceDead
+            )
+        }
+    }
+
+    /// Runs a switch body on the serialization chain: each queued switch settles the
+    /// previous one fully (including error paths) before touching shared tap resources.
+    private func enqueueSwitch(_ body: @escaping @MainActor () async throws -> Void) async throws {
+        let predecessor = switchChainTask
+        let task = Task { @MainActor in
+            _ = try? await predecessor.value
+            try await body()
+        }
+        switchChainTask = task
+        try await task.value
+    }
+
+    private func performSwitchUpdate(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws {
         precondition(!newDeviceUIDs.isEmpty, "Must have at least one target device")
         self.preferredTapSourceDeviceUID = preferredTapSourceDeviceUID
 
@@ -768,33 +800,35 @@ final class ProcessTapController: ProcessTapControlling {
     /// the output device. Used when the system default changes and an explicitly-routed app's
     /// stream-specific tap becomes stale (captures silence on the old default's stream).
     func refreshTapSource(_ preferredDeviceUID: String?) async throws {
-        let oldPreferred = self.preferredTapSourceDeviceUID
-        self.preferredTapSourceDeviceUID = preferredDeviceUID
-        guard activated, let primaryUID = currentDeviceUIDs.first else { return }
-        guard oldPreferred != preferredDeviceUID else { return }
+        try await enqueueSwitch {
+            let oldPreferred = self.preferredTapSourceDeviceUID
+            self.preferredTapSourceDeviceUID = preferredDeviceUID
+            guard self.activated, let primaryUID = self.currentDeviceUIDs.first else { return }
+            guard oldPreferred != preferredDeviceUID else { return }
 
-        let allUIDs = currentDeviceUIDs
-        logger.info("[REFRESH] Tap source changing for \(self.app.name): \(oldPreferred ?? "mixdown") → \(preferredDeviceUID ?? "mixdown")")
+            let allUIDs = self.currentDeviceUIDs
+            self.logger.info("[REFRESH] Tap source changing for \(self.app.name): \(oldPreferred ?? "mixdown") → \(preferredDeviceUID ?? "mixdown")")
 
-        crossfadeTask?.cancel()
-        crossfadeTask = Task {
-            try await performCrossfadeSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
-        }
-        do {
-            try await crossfadeTask!.value
-        } catch is CancellationError {
-            logger.info("[REFRESH] Tap source refresh cancelled")
-            return
-        } catch {
-            logger.warning("[REFRESH] Crossfade failed, using destructive switch: \(error.localizedDescription)")
-            guard primaryResources.tapDescription != nil else {
-                throw CrossfadeError.noTapDescription
+            self.crossfadeTask?.cancel()
+            self.crossfadeTask = Task {
+                try await self.performCrossfadeSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
             }
-            try await performDestructiveDeviceSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
-        }
-        crossfadeTask = nil
+            do {
+                try await self.crossfadeTask!.value
+            } catch is CancellationError {
+                self.logger.info("[REFRESH] Tap source refresh cancelled")
+                return
+            } catch {
+                self.logger.warning("[REFRESH] Crossfade failed, using destructive switch: \(error.localizedDescription)")
+                guard self.primaryResources.tapDescription != nil else {
+                    throw CrossfadeError.noTapDescription
+                }
+                try await self.performDestructiveDeviceSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
+            }
+            self.crossfadeTask = nil
 
-        logger.info("[REFRESH] Tap source refresh complete for \(self.app.name)")
+            self.logger.info("[REFRESH] Tap source refresh complete for \(self.app.name)")
+        }
     }
 
     /// Tears down the tap and releases all CoreAudio resources.
